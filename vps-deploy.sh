@@ -5,7 +5,7 @@ set -Eeuo pipefail
 SCRIPT_NAME="VPS Service Manager"
 SCRIPT_VERSION="2.0.0"
 PROJECT_015_DIR="/opt/project_015"
-GITHUB_REPO="${GITHUB_REPO:-https://github.com/guangwit9/015.git}"
+GITHUB_REPO="${GITHUB_REPO:-https://github.com/witguang/015.git}"
 PROJECT_015_CUSTOM_ASSETS_DIR="/opt/project_015_custom_assets"
 PROJECT_015_COMPOSE="compose.vps.yml"
 PROJECT_015_ENV="deploy.env"
