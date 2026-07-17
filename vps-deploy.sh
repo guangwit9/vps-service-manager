@@ -3,12 +3,17 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="VPS Service Manager"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 PROJECT_015_DIR="/opt/project_015"
 PROJECT_015_REPO="https://github.com/keven1024/015.git"
 PROJECT_015_COMPOSE="compose.vps.yml"
 PROJECT_015_ENV="deploy.env"
 PROJECT_015_ASSET_BASE_URL="https://raw.githubusercontent.com/guangwit9/vps-service-manager/main/assets/project_015"
+BUILD_SWAP_FILE="${BUILD_SWAP_FILE:-/swapfile-vps-manager}"
+BUILD_SWAP_SIZE_MB=2048
+FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
+MEMINFO_FILE="${MEMINFO_FILE:-/proc/meminfo}"
+PROC_SWAPS_FILE="${PROC_SWAPS_FILE:-/proc/swaps}"
 
 if [[ -t 1 ]]; then
     RED='\033[0;31m'
@@ -157,6 +162,63 @@ ensure_docker() {
     have_compose || die "Docker 已安装，但 Compose 不可用。"
 }
 
+ensure_build_swap() {
+    local required_kb=$((BUILD_SWAP_SIZE_MB * 1024)) current_kb
+    current_kb="$(awk '/^SwapTotal:/ { print $2 }' "$MEMINFO_FILE")"
+    current_kb="${current_kb:-0}"
+
+    if ((current_kb >= required_kb)); then
+        success "当前 Swap 为 $((current_kb / 1024))MB，无需新增。"
+        return
+    fi
+
+    info "当前 Swap 为 $((current_kb / 1024))MB，准备启用 ${BUILD_SWAP_SIZE_MB}MB 构建 Swap。"
+    command -v swapon >/dev/null 2>&1 || die "系统缺少 swapon，无法配置 Swap。"
+    command -v mkswap >/dev/null 2>&1 || die "系统缺少 mkswap，无法配置 Swap。"
+
+    if awk 'NR > 1 { print $1 }' "$PROC_SWAPS_FILE" | grep -Fxq "$BUILD_SWAP_FILE"; then
+        warn "$BUILD_SWAP_FILE 已启用，但系统总 Swap 仍小于 ${BUILD_SWAP_SIZE_MB}MB。"
+    elif [[ -e "$BUILD_SWAP_FILE" ]]; then
+        info "检测到已有 $BUILD_SWAP_FILE，尝试直接启用。"
+        swapon "$BUILD_SWAP_FILE" || \
+            die "$BUILD_SWAP_FILE 已存在但无法启用。请确认它是有效 Swap 文件，或手动移走后重试。"
+    else
+        local available_kb swap_directory
+        swap_directory="$(dirname "$BUILD_SWAP_FILE")"
+        available_kb="$(df -Pk "$swap_directory" | awk 'NR == 2 { print $4 }')"
+        available_kb="${available_kb:-0}"
+        ((available_kb >= required_kb + 262144)) || \
+            die "磁盘空间不足：创建 2GB Swap 后必须至少保留 256MB 可用空间。"
+        touch "$BUILD_SWAP_FILE"
+        chmod 600 "$BUILD_SWAP_FILE"
+        if command -v chattr >/dev/null 2>&1; then
+            chattr +C "$BUILD_SWAP_FILE" 2>/dev/null || true
+        fi
+        if ! dd if=/dev/zero of="$BUILD_SWAP_FILE" bs=1M count="$BUILD_SWAP_SIZE_MB"; then
+            rm -f "$BUILD_SWAP_FILE"
+            die "创建 Swap 文件失败，请检查磁盘剩余空间。"
+        fi
+        chmod 600 "$BUILD_SWAP_FILE"
+        if ! mkswap "$BUILD_SWAP_FILE"; then
+            rm -f "$BUILD_SWAP_FILE"
+            die "格式化 Swap 文件失败。"
+        fi
+        if ! swapon "$BUILD_SWAP_FILE"; then
+            rm -f "$BUILD_SWAP_FILE"
+            die "启用 Swap 失败；当前文件系统可能不支持 Swap 文件。"
+        fi
+    fi
+
+    if ! awk -v path="$BUILD_SWAP_FILE" '$1 == path && $3 == "swap" { found = 1 } END { exit !found }' "$FSTAB_FILE"; then
+        printf '%s none swap sw 0 0\n' "$BUILD_SWAP_FILE" >>"$FSTAB_FILE"
+    fi
+
+    current_kb="$(awk '/^SwapTotal:/ { print $2 }' "$MEMINFO_FILE")"
+    current_kb="${current_kb:-0}"
+    ((current_kb >= required_kb)) || die "Swap 启用后容量仍不足 ${BUILD_SWAP_SIZE_MB}MB。"
+    success "Swap 已启用并写入 $FSTAB_FILE，重启后仍会保留。"
+}
+
 project_015_compose() {
     (
         cd "$PROJECT_015_DIR"
@@ -290,6 +352,10 @@ CUSTOMIZER
     ' "$PROJECT_015_DIR/Dockerfile" >"$PROJECT_015_DIR/Dockerfile.vps"
     grep -q 'customize-015-build.sh' "$PROJECT_015_DIR/Dockerfile.vps" || \
         die "上游 Dockerfile 结构已变化，无法插入项目 015 定制步骤。"
+    sed -i -E 's/^ENV NODE_OPTIONS=.*/ENV NODE_OPTIONS="--max-old-space-size=1024"/' \
+        "$PROJECT_015_DIR/Dockerfile.vps"
+    grep -q '^ENV NODE_OPTIONS="--max-old-space-size=1024"$' "$PROJECT_015_DIR/Dockerfile.vps" || \
+        die "未能将 Node.js 构建内存上限设置为 1024MB。"
 }
 
 customize_project_015_config() {
@@ -510,10 +576,15 @@ prepare_project_015_runtime() {
 }
 
 deploy_project_015_containers() {
+    ensure_build_swap
     info "正在拉取 Redis 镜像..."
     project_015_compose pull redis
-    info "正在从当前源码构建定制 app 和 worker 镜像，首次构建可能需要数分钟..."
-    project_015_compose build --pull app worker
+    info "正在构建定制 app 镜像，首次构建可能需要数分钟..."
+    project_015_compose build --pull app
+    info "正在顺序构建 worker 镜像，以降低内存峰值..."
+    project_015_compose build --pull worker
+    info "正在清理构建产生的悬空镜像..."
+    docker image prune -f
     project_015_compose up -d --remove-orphans
 }
 

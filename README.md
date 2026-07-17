@@ -4,6 +4,8 @@
 
 项目 015 部署时会交互配置管理员邮箱、个人主页、域名和存储上限，并在 VPS 上构建定制 app 镜像。页面标题固定为 `File Share`，管理员显示为 `Guang`，版权显示为 `Designed by Guang`。
 
+源码构建前，脚本会检查系统 Swap。总 Swap 小于 2GB 时会创建并永久启用 `/swapfile-vps-manager`（2GB），同时将 Node.js 编译堆上限设为 1024MB。构建完成后会自动清理 Docker dangling images。
+
 ## 项目 015 图片
 
 将自己的图片上传到仓库的 `assets/project_015/` 目录，脚本会在部署或更新时自动下载：
