@@ -3,14 +3,14 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="VPS Service Manager"
-SCRIPT_VERSION="2.0.1"
+SCRIPT_VERSION="2.0.2"
 PROJECT_015_DIR="/opt/project_015"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/witguang/015.git}"
 PROJECT_015_CUSTOM_ASSETS_DIR="/opt/project_015_custom_assets"
 PROJECT_015_COMPOSE="compose.vps.yml"
 PROJECT_015_ENV="deploy.env"
-BUILD_SWAP_FILE="${BUILD_SWAP_FILE:-/swapfile-vps-manager}"
-BUILD_SWAP_SIZE_MB=2048
+BUILD_SWAP_FILE="${BUILD_SWAP_FILE:-/swapfile}"
+BUILD_SWAP_SIZE_MB=4096
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
 MEMINFO_FILE="${MEMINFO_FILE:-/proc/meminfo}"
 PROC_SWAPS_FILE="${PROC_SWAPS_FILE:-/proc/swaps}"
@@ -162,9 +162,66 @@ ensure_docker() {
     have_compose || die "Docker 已安装，但 Compose 不可用。"
 }
 
+get_swap_total_kb() {
+    awk '/^SwapTotal:/ { print $2 }' "$MEMINFO_FILE"
+}
+
+swap_file_is_active() {
+    awk 'NR > 1 { print $1 }' "$PROC_SWAPS_FILE" | grep -Fxq "$1"
+}
+
+persist_swap_file() {
+    local swap_file="$1"
+    if ! awk -v path="$swap_file" '$1 == path && $3 == "swap" { found = 1 } END { exit !found }' "$FSTAB_FILE"; then
+        printf '%s none swap sw 0 0\n' "$swap_file" >>"$FSTAB_FILE"
+    fi
+}
+
+create_or_enable_swap_file() {
+    local swap_file="$1" required_kb=$((BUILD_SWAP_SIZE_MB * 1024))
+    local available_kb swap_directory
+
+    if swap_file_is_active "$swap_file"; then
+        persist_swap_file "$swap_file"
+        return
+    fi
+    if [[ -e "$swap_file" ]]; then
+        info "检测到已有 $swap_file，尝试直接启用。"
+        swapon "$swap_file" || \
+            die "$swap_file 已存在但无法启用。请确认它是有效 Swap 文件，或手动移走后重试。"
+        persist_swap_file "$swap_file"
+        return
+    fi
+
+    swap_directory="$(dirname "$swap_file")"
+    available_kb="$(df -Pk "$swap_directory" | awk 'NR == 2 { print $4 }')"
+    available_kb="${available_kb:-0}"
+    ((available_kb >= required_kb + 262144)) || \
+        die "磁盘空间不足：创建 ${BUILD_SWAP_SIZE_MB}MB Swap 后必须至少保留 256MB 可用空间。"
+    touch "$swap_file"
+    chmod 600 "$swap_file"
+    if command -v chattr >/dev/null 2>&1; then
+        chattr +C "$swap_file" 2>/dev/null || true
+    fi
+    if ! dd if=/dev/zero of="$swap_file" bs=1M count="$BUILD_SWAP_SIZE_MB"; then
+        rm -f "$swap_file"
+        die "创建 Swap 文件失败，请检查磁盘剩余空间。"
+    fi
+    chmod 600 "$swap_file"
+    if ! mkswap "$swap_file"; then
+        rm -f "$swap_file"
+        die "格式化 Swap 文件失败。"
+    fi
+    if ! swapon "$swap_file"; then
+        rm -f "$swap_file"
+        die "启用 Swap 失败；当前文件系统可能不支持 Swap 文件。"
+    fi
+    persist_swap_file "$swap_file"
+}
+
 ensure_build_swap() {
-    local required_kb=$((BUILD_SWAP_SIZE_MB * 1024)) current_kb
-    current_kb="$(awk '/^SwapTotal:/ { print $2 }' "$MEMINFO_FILE")"
+    local required_kb=$((BUILD_SWAP_SIZE_MB * 1024)) current_kb swap_file
+    current_kb="$(get_swap_total_kb)"
     current_kb="${current_kb:-0}"
 
     if ((current_kb >= required_kb)); then
@@ -176,47 +233,24 @@ ensure_build_swap() {
     command -v swapon >/dev/null 2>&1 || die "系统缺少 swapon，无法配置 Swap。"
     command -v mkswap >/dev/null 2>&1 || die "系统缺少 mkswap，无法配置 Swap。"
 
-    if awk 'NR > 1 { print $1 }' "$PROC_SWAPS_FILE" | grep -Fxq "$BUILD_SWAP_FILE"; then
-        warn "$BUILD_SWAP_FILE 已启用，但系统总 Swap 仍小于 ${BUILD_SWAP_SIZE_MB}MB。"
-    elif [[ -e "$BUILD_SWAP_FILE" ]]; then
-        info "检测到已有 $BUILD_SWAP_FILE，尝试直接启用。"
-        swapon "$BUILD_SWAP_FILE" || \
-            die "$BUILD_SWAP_FILE 已存在但无法启用。请确认它是有效 Swap 文件，或手动移走后重试。"
-    else
-        local available_kb swap_directory
-        swap_directory="$(dirname "$BUILD_SWAP_FILE")"
-        available_kb="$(df -Pk "$swap_directory" | awk 'NR == 2 { print $4 }')"
-        available_kb="${available_kb:-0}"
-        ((available_kb >= required_kb + 262144)) || \
-            die "磁盘空间不足：创建 2GB Swap 后必须至少保留 256MB 可用空间。"
-        touch "$BUILD_SWAP_FILE"
-        chmod 600 "$BUILD_SWAP_FILE"
-        if command -v chattr >/dev/null 2>&1; then
-            chattr +C "$BUILD_SWAP_FILE" 2>/dev/null || true
-        fi
-        if ! dd if=/dev/zero of="$BUILD_SWAP_FILE" bs=1M count="$BUILD_SWAP_SIZE_MB"; then
-            rm -f "$BUILD_SWAP_FILE"
-            die "创建 Swap 文件失败，请检查磁盘剩余空间。"
-        fi
-        chmod 600 "$BUILD_SWAP_FILE"
-        if ! mkswap "$BUILD_SWAP_FILE"; then
-            rm -f "$BUILD_SWAP_FILE"
-            die "格式化 Swap 文件失败。"
-        fi
-        if ! swapon "$BUILD_SWAP_FILE"; then
-            rm -f "$BUILD_SWAP_FILE"
-            die "启用 Swap 失败；当前文件系统可能不支持 Swap 文件。"
-        fi
+    swap_file="$BUILD_SWAP_FILE"
+    if swap_file_is_active "$swap_file"; then
+        persist_swap_file "$swap_file"
+        warn "$swap_file 已启用但总 Swap 仍不足 4GB，将创建补充 Swap 文件。"
+        swap_file="${BUILD_SWAP_FILE}.vps-extra"
     fi
+    create_or_enable_swap_file "$swap_file"
 
-    if ! awk -v path="$BUILD_SWAP_FILE" '$1 == path && $3 == "swap" { found = 1 } END { exit !found }' "$FSTAB_FILE"; then
-        printf '%s none swap sw 0 0\n' "$BUILD_SWAP_FILE" >>"$FSTAB_FILE"
-    fi
-
-    current_kb="$(awk '/^SwapTotal:/ { print $2 }' "$MEMINFO_FILE")"
+    current_kb="$(get_swap_total_kb)"
     current_kb="${current_kb:-0}"
+    if ((current_kb < required_kb)) && [[ "$swap_file" == "$BUILD_SWAP_FILE" ]]; then
+        warn "$BUILD_SWAP_FILE 容量不足 4GB，将创建补充 Swap 文件。"
+        create_or_enable_swap_file "${BUILD_SWAP_FILE}.vps-extra"
+        current_kb="$(get_swap_total_kb)"
+        current_kb="${current_kb:-0}"
+    fi
     ((current_kb >= required_kb)) || die "Swap 启用后容量仍不足 ${BUILD_SWAP_SIZE_MB}MB。"
-    success "Swap 已启用并写入 $FSTAB_FILE，重启后仍会保留。"
+    success "Swap 已达到 $((current_kb / 1024))MB，并写入 $FSTAB_FILE。"
 }
 
 project_015_compose() {
@@ -309,7 +343,7 @@ stage_project_015_custom_assets() {
 write_project_015_build_files() {
     awk '
         $0 == "RUN corepack enable pnpm && pnpm i && pnpm --filter=015-front build && pnpm --dir pkg/mail export" {
-            print "RUN export NODE_OPTIONS=\"--max_old_space_size=4096\" && corepack enable pnpm && pnpm i && pnpm --filter=015-front build && pnpm --dir pkg/mail export"
+            print "RUN export NODE_OPTIONS=\"--max_old_space_size=1024\" && corepack enable pnpm && pnpm i --network-concurrency 1 --child-concurrency 1 && pnpm --filter=015-front build && pnpm --dir pkg/mail export"
             next
         }
         { print }
@@ -319,9 +353,9 @@ write_project_015_build_files() {
     ' "$PROJECT_015_DIR/Dockerfile" >"$PROJECT_015_DIR/Dockerfile.vps"
     grep -q '/app/.vps-custom-assets/logo.png' "$PROJECT_015_DIR/Dockerfile.vps" || \
         die "Fork 中的 Dockerfile 结构已变化，无法插入自定义图片覆盖步骤。"
-    grep -Fq 'RUN export NODE_OPTIONS="--max_old_space_size=4096" && corepack enable pnpm && pnpm i && pnpm --filter=015-front build && pnpm --dir pkg/mail export' \
+    grep -Fq 'RUN export NODE_OPTIONS="--max_old_space_size=1024" && corepack enable pnpm && pnpm i --network-concurrency 1 --child-concurrency 1 && pnpm --filter=015-front build && pnpm --dir pkg/mail export' \
         "$PROJECT_015_DIR/Dockerfile.vps" || \
-        die "未找到 Fork 的前端构建命令，无法设置 Node.js 4096MB 堆上限。"
+        die "未找到 Fork 的前端构建命令，无法应用 1024MB 堆上限和单线程 pnpm 参数。"
 }
 
 configure_project_015_runtime_config() {
