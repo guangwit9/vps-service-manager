@@ -4,7 +4,7 @@
 
 项目 015 直接从自己的 Fork 构建，不再克隆原作者仓库后动态替换品牌文字。请先将脚本顶部的 `GITHUB_REPO="https://github.com/你的用户名/015.git"` 改成实际 Fork 地址。管理员、标题、邮箱和版权信息应直接在 Fork 中维护。
 
-源码构建前，脚本会检查系统 Swap。总 Swap 小于 2GB 时会创建并永久启用 `/swapfile-vps-manager`（2GB），同时将 Node.js 编译堆上限设为 1024MB。构建完成后会自动清理 Docker dangling images。
+源码构建前，脚本会检查系统 Swap。总 Swap 小于 2GB 时会创建并永久启用 `/swapfile-vps-manager`（2GB），同时为前端 `pnpm build` 设置 4096MB 的 Node.js 堆上限。构建完成后会自动清理 Docker dangling images。
 
 ## 项目 015 图片
 

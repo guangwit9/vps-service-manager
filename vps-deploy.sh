@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="VPS Service Manager"
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.0.1"
 PROJECT_015_DIR="/opt/project_015"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/witguang/015.git}"
 PROJECT_015_CUSTOM_ASSETS_DIR="/opt/project_015_custom_assets"
@@ -308,6 +308,10 @@ stage_project_015_custom_assets() {
 
 write_project_015_build_files() {
     awk '
+        $0 == "RUN corepack enable pnpm && pnpm i && pnpm --filter=015-front build && pnpm --dir pkg/mail export" {
+            print "RUN export NODE_OPTIONS=\"--max_old_space_size=4096\" && corepack enable pnpm && pnpm i && pnpm --filter=015-front build && pnpm --dir pkg/mail export"
+            next
+        }
         { print }
         $0 == "COPY . ." {
             print "RUN set -eu; if [ -f /app/.vps-custom-assets/background.jpg ]; then cp -f /app/.vps-custom-assets/background.jpg /app/front/public/background.jpg; fi; if [ -f /app/.vps-custom-assets/welcome.jpg ]; then cp -f /app/.vps-custom-assets/welcome.jpg /app/front/public/welcome.jpg; fi; if [ -f /app/.vps-custom-assets/logo.png ]; then cp -f /app/.vps-custom-assets/logo.png /app/front/public/logo.png; fi"
@@ -315,10 +319,9 @@ write_project_015_build_files() {
     ' "$PROJECT_015_DIR/Dockerfile" >"$PROJECT_015_DIR/Dockerfile.vps"
     grep -q '/app/.vps-custom-assets/logo.png' "$PROJECT_015_DIR/Dockerfile.vps" || \
         die "Fork 中的 Dockerfile 结构已变化，无法插入自定义图片覆盖步骤。"
-    sed -i -E 's/^ENV NODE_OPTIONS=.*/ENV NODE_OPTIONS="--max-old-space-size=1024"/' \
-        "$PROJECT_015_DIR/Dockerfile.vps"
-    grep -q '^ENV NODE_OPTIONS="--max-old-space-size=1024"$' "$PROJECT_015_DIR/Dockerfile.vps" || \
-        die "未能将 Node.js 构建内存上限设置为 1024MB。"
+    grep -Fq 'RUN export NODE_OPTIONS="--max_old_space_size=4096" && corepack enable pnpm && pnpm i && pnpm --filter=015-front build && pnpm --dir pkg/mail export' \
+        "$PROJECT_015_DIR/Dockerfile.vps" || \
+        die "未找到 Fork 的前端构建命令，无法设置 Node.js 4096MB 堆上限。"
 }
 
 configure_project_015_runtime_config() {
