@@ -236,8 +236,8 @@ EOF
         sed -i -E \
             -e "s#^[[:space:]]*download_secret:.*#    download_secret: ${download_secret}#" \
             -e "s#^[[:space:]]*password_salt:.*#    password_salt: ${password_salt}#" \
-            -e "s#^[[:space:]]*path: /upload[[:space:]]*$#    path: /uploads#" \
-            -e "s#^[[:space:]]*url: http://localhost:5000[[:space:]]*$#    url: '${site_url}'#" \
+            -e "s#^[[:space:]]*path: /upload[[:space:]]*\$#    path: /uploads#" \
+            -e "s#^[[:space:]]*url: http://localhost:5000[[:space:]]*\$#    url: '${site_url}'#" \
             "$PROJECT_015_DIR/config.yaml"
         chmod 600 "$PROJECT_015_DIR/config.yaml"
         success "已生成 config.yaml 和随机安全密钥。"
