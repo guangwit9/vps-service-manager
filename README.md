@@ -1,20 +1,20 @@
 # VPS Service Manager
 
-面向个人 VPS 的模块化 Bash 部署脚本。目前集成项目 `015`，支持安装、更新、站点品牌定制、状态、日志、重启、停止、Nginx 反向代理和卸载。
+面向个人 VPS 的模块化 Bash 部署脚本。目前集成项目 `015`，支持安装、更新、外部图片覆盖、状态、日志、重启、停止、Nginx 反向代理和卸载。
 
-项目 015 部署时会交互配置管理员邮箱、个人主页、域名和存储上限，并在 VPS 上构建定制 app 镜像。页面标题固定为 `File Share`，管理员显示为 `Guang`，版权显示为 `Designed by Guang`。
+项目 015 直接从自己的 Fork 构建，不再克隆原作者仓库后动态替换品牌文字。请先将脚本顶部的 `GITHUB_REPO="https://github.com/你的用户名/015.git"` 改成实际 Fork 地址。管理员、标题、邮箱和版权信息应直接在 Fork 中维护。
 
 源码构建前，脚本会检查系统 Swap。总 Swap 小于 2GB 时会创建并永久启用 `/swapfile-vps-manager`（2GB），同时将 Node.js 编译堆上限设为 1024MB。构建完成后会自动清理 Docker dangling images。
 
 ## 项目 015 图片
 
-将自己的图片上传到仓库的 `assets/project_015/` 目录，脚本会在部署或更新时自动下载：
+将自己的图片上传到 VPS 的 `/opt/project_015_custom_assets/` 目录，脚本会在部署、更新或重新配置时自动应用：
 
 - `background.jpg`：站点背景图，部署到源码的 `front/public/background.jpg`。
 - `welcome.jpg`：About/Welcome 横幅，部署到源码的 `front/public/welcome.jpg`。
-- `logo.png`：导航 Logo 和 Favicon，部署为源码中的 `front/public/custom-logo.png`。
+- `logo.png`：导航 Logo 和 Favicon，覆盖构建源码中的 `front/public/logo.png`。
 
-Nuxt 使用 `config.yaml` 动态生成网页 `<title>`，原项目没有独立的 `index.html` 或 `favicon.ico`。如果自定义背景或 Welcome 图片不存在，脚本会清空原作者的外部图片 URL，而不会继续引用原作者资源。
+图片先暂存到项目的 `.vps-custom-assets/` 构建层，再由 Dockerfile 使用 `if` 和 `cp` 覆盖 `front/public/`，因此不会污染 Git 工作区。缺少某张图片时会跳过覆盖并使用 Fork 自带的默认资源。卸载项目时外部图片目录也会保留。
 
 ## 直接运行
 

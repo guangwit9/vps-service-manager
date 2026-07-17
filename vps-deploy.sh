@@ -3,12 +3,12 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="VPS Service Manager"
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="2.0.0"
 PROJECT_015_DIR="/opt/project_015"
-PROJECT_015_REPO="https://github.com/keven1024/015.git"
+GITHUB_REPO="${GITHUB_REPO:-https://github.com/你的用户名/015.git}"
+PROJECT_015_CUSTOM_ASSETS_DIR="/opt/project_015_custom_assets"
 PROJECT_015_COMPOSE="compose.vps.yml"
 PROJECT_015_ENV="deploy.env"
-PROJECT_015_ASSET_BASE_URL="https://raw.githubusercontent.com/guangwit9/vps-service-manager/main/assets/project_015"
 BUILD_SWAP_FILE="${BUILD_SWAP_FILE:-/swapfile-vps-manager}"
 BUILD_SWAP_SIZE_MB=2048
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
@@ -234,16 +234,6 @@ valid_domain() {
     [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
 }
 
-valid_email() {
-    local pattern='^[A-Za-z0-9.!#$%&*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$'
-    [[ "$1" =~ $pattern ]]
-}
-
-valid_http_url() {
-    local pattern='^https?://[A-Za-z0-9._~:/?&=%+-]+$'
-    [[ "$1" =~ $pattern ]]
-}
-
 valid_storage_limit() {
     [[ "$1" =~ ^[1-9][0-9]*([.][0-9]+)?(KB|MB|GB|TB|KiB|MiB|GiB|TiB)$ ]]
 }
@@ -256,9 +246,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.vps
-      args:
-        CUSTOM_HOME_URL: "${HOME_URL}"
-        CUSTOM_ADMIN_EMAIL: "${ADMIN_EMAIL}"
     restart: unless-stopped
     volumes:
       - ./uploads:/uploads
@@ -287,139 +274,76 @@ services:
 COMPOSE
 }
 
-# 原项目没有把背景图和 Welcome 横幅存成相对路径，而是在 config.example.yaml 中分别通过
-# site.bg_url、about.bg_url 指向作者的外部 URL。本脚本建立以下可覆盖的本地资源路径：
-# 可选图片放在你的 vps-service-manager GitHub 仓库中：
-#   assets/project_015/background.jpg -> front/public/background.jpg -> /background.jpg（站点背景图）
-#   assets/project_015/welcome.jpg    -> front/public/welcome.jpg    -> /welcome.jpg（About/Welcome 横幅）
-#   assets/project_015/logo.png       -> front/public/custom-logo.png -> /custom-logo.png（导航 Logo、Favicon）
-# 原项目没有独立的 index.html 或 favicon.ico；Nuxt 根据 config.yaml 的 site.title 生成 <title>，
-# useSeo.ts 使用 Logo 作为 favicon；构建时会将前端引用统一切换到 /custom-logo.png。
-download_project_015_asset() {
-    local name="$1" destination="$2" temp_file
-    temp_file="$(mktemp)"
-    if curl -fsSL "$PROJECT_015_ASSET_BASE_URL/$name" -o "$temp_file"; then
-        install -m 0644 "$temp_file" "$destination"
-        success "已安装自定义资源：$name"
-        rm -f "$temp_file"
-        return 0
-    fi
-    rm -f "$temp_file"
-    return 1
+validate_project_015_repo() {
+    [[ "$GITHUB_REPO" != *'你的用户名'* ]] || \
+        die "请先将脚本顶部的 GITHUB_REPO 修改为你的 015 Fork 地址。"
+    [[ "$GITHUB_REPO" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git$ ]] || \
+        die "GITHUB_REPO 必须是完整的 GitHub HTTPS 地址，例如 https://github.com/guangwit9/015.git"
 }
 
-install_project_015_assets() {
-    mkdir -p "$PROJECT_015_DIR/front/public"
-    download_project_015_asset background.jpg "$PROJECT_015_DIR/front/public/background.jpg" || \
-        info "未找到可选资源 assets/project_015/background.jpg，将禁用外部背景图。"
-    download_project_015_asset welcome.jpg "$PROJECT_015_DIR/front/public/welcome.jpg" || \
-        info "未找到可选资源 assets/project_015/welcome.jpg，将禁用原作者 Welcome 横幅。"
-    if ! download_project_015_asset logo.png "$PROJECT_015_DIR/front/public/custom-logo.png"; then
-        cp "$PROJECT_015_DIR/front/public/logo.png" "$PROJECT_015_DIR/front/public/custom-logo.png"
-        info "未找到可选资源 assets/project_015/logo.png，暂时复制项目内置 Logo。"
+prepare_project_015_custom_assets_dir() {
+    mkdir -p "$PROJECT_015_CUSTOM_ASSETS_DIR"
+    chmod 755 "$PROJECT_015_CUSTOM_ASSETS_DIR"
+    info "如果你需要自定义图片，请将 background.jpg、welcome.jpg 或 logo.png 上传至 VPS 的 $PROJECT_015_CUSTOM_ASSETS_DIR/ 目录中。下次部署时将自动应用。"
+}
+
+stage_project_015_custom_assets() {
+    local staging_dir="$PROJECT_015_DIR/.vps-custom-assets"
+    mkdir -p "$staging_dir"
+    rm -f "$staging_dir/background.jpg" "$staging_dir/welcome.jpg" "$staging_dir/logo.png"
+
+    if [[ -f "$PROJECT_015_CUSTOM_ASSETS_DIR/background.jpg" ]]; then
+        cp -f "$PROJECT_015_CUSTOM_ASSETS_DIR/background.jpg" "$staging_dir/background.jpg"
+        success "已暂存自定义背景图 background.jpg。"
+    fi
+    if [[ -f "$PROJECT_015_CUSTOM_ASSETS_DIR/welcome.jpg" ]]; then
+        cp -f "$PROJECT_015_CUSTOM_ASSETS_DIR/welcome.jpg" "$staging_dir/welcome.jpg"
+        success "已暂存自定义 Welcome 图片 welcome.jpg。"
+    fi
+    if [[ -f "$PROJECT_015_CUSTOM_ASSETS_DIR/logo.png" ]]; then
+        cp -f "$PROJECT_015_CUSTOM_ASSETS_DIR/logo.png" "$staging_dir/logo.png"
+        success "已暂存自定义 Logo logo.png。"
     fi
 }
 
 write_project_015_build_files() {
-    cat >"$PROJECT_015_DIR/customize-015-build.sh" <<'CUSTOMIZER'
-#!/bin/sh
-set -eu
-
-home_url="${CUSTOM_HOME_URL:?CUSTOM_HOME_URL is required}"
-admin_email="${CUSTOM_ADMIN_EMAIL:?CUSTOM_ADMIN_EMAIL is required}"
-escaped_home_url="$(printf '%s' "$home_url" | sed 's/[&|]/\\&/g')"
-escaped_admin_email="$(printf '%s' "$admin_email" | sed 's/[&|]/\\&/g')"
-
-# These replacements run inside the image build, leaving the upstream Git checkout clean.
-find front pkg -type f \( -name '*.vue' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \) -exec \
-    sed -i \
-        -e "s|https://github.com/keven1024/015|${escaped_home_url}|g" \
-        -e "s|https://fudaoyuan.icu|${escaped_home_url}|g" \
-        -e "s|keven@fudaoyuan\.icu|${escaped_admin_email}|g" \
-        -e 's|keven1024|Guang|g' \
-        -e 's|/logo\.png|/custom-logo.png|g' \
-        {} +
-CUSTOMIZER
-    chmod 700 "$PROJECT_015_DIR/customize-015-build.sh"
-
     awk '
         { print }
         $0 == "COPY . ." {
-            print "ARG CUSTOM_HOME_URL"
-            print "ARG CUSTOM_ADMIN_EMAIL"
-            print "RUN CUSTOM_HOME_URL=\"${CUSTOM_HOME_URL}\" CUSTOM_ADMIN_EMAIL=\"${CUSTOM_ADMIN_EMAIL}\" /bin/sh /app/customize-015-build.sh"
+            print "RUN set -eu; if [ -f /app/.vps-custom-assets/background.jpg ]; then cp -f /app/.vps-custom-assets/background.jpg /app/front/public/background.jpg; fi; if [ -f /app/.vps-custom-assets/welcome.jpg ]; then cp -f /app/.vps-custom-assets/welcome.jpg /app/front/public/welcome.jpg; fi; if [ -f /app/.vps-custom-assets/logo.png ]; then cp -f /app/.vps-custom-assets/logo.png /app/front/public/logo.png; fi"
         }
     ' "$PROJECT_015_DIR/Dockerfile" >"$PROJECT_015_DIR/Dockerfile.vps"
-    grep -q 'customize-015-build.sh' "$PROJECT_015_DIR/Dockerfile.vps" || \
-        die "上游 Dockerfile 结构已变化，无法插入项目 015 定制步骤。"
+    grep -q '/app/.vps-custom-assets/logo.png' "$PROJECT_015_DIR/Dockerfile.vps" || \
+        die "Fork 中的 Dockerfile 结构已变化，无法插入自定义图片覆盖步骤。"
     sed -i -E 's/^ENV NODE_OPTIONS=.*/ENV NODE_OPTIONS="--max-old-space-size=1024"/' \
         "$PROJECT_015_DIR/Dockerfile.vps"
     grep -q '^ENV NODE_OPTIONS="--max-old-space-size=1024"$' "$PROJECT_015_DIR/Dockerfile.vps" || \
         die "未能将 Node.js 构建内存上限设置为 1024MB。"
 }
 
-customize_project_015_config() {
+configure_project_015_runtime_config() {
     local config="$PROJECT_015_DIR/config.yaml"
-    local site_url="$1" admin_email="$2" home_url="$3" storage_limit="$4"
-    local background_url='' welcome_url='' enable_background='false' temp_file escaped_home_url
-
-    if [[ -f "$PROJECT_015_DIR/front/public/background.jpg" ]]; then
-        background_url='/background.jpg'
-        enable_background='true'
-    fi
-    [[ -f "$PROJECT_015_DIR/front/public/welcome.jpg" ]] && welcome_url='/welcome.jpg'
-
+    local site_url="$1" storage_limit="$2" temp_file
     temp_file="$(mktemp "$PROJECT_015_DIR/.config.yaml.XXXXXX")"
-    awk \
-        -v site_url="$site_url" \
-        -v admin_email="$admin_email" \
-        -v home_url="$home_url" \
-        -v storage_limit="$storage_limit" \
-        -v background_url="$background_url" \
-        -v welcome_url="$welcome_url" \
-        -v enable_background="$enable_background" '
-        BEGIN { section = ""; subsection = ""; quote = sprintf("%c", 39) }
+
+    awk -v site_url="$site_url" -v storage_limit="$storage_limit" '
+        BEGIN { section = ""; quote = sprintf("%c", 39) }
         /^[A-Za-z0-9_-]+:[[:space:]]*($|#)/ {
             section = $0
             sub(/:.*/, "", section)
-            subsection = ""
         }
         section == "upload" && /^    path:/ { print "    path: /uploads"; next }
         section == "upload" && /^    maximum:/ { print "    maximum: " storage_limit; next }
-        section == "site" && /^    title:/ { subsection = "title"; print; next }
-        section == "site" && subsection == "title" && /^        / && /en/ {
-            print "        " quote "en" quote ": " quote "File Share" quote
-            next
-        }
-        section == "site" && /^    desc:/ { subsection = "desc"; print; next }
-        section == "site" && subsection == "desc" && /^        / && /en/ {
-            print "        " quote "en" quote ": " quote "Private file sharing service." quote
-            next
-        }
-        section == "site" && /^    url:/ { print "    url: " quote site_url quote; subsection = ""; next }
-        section == "site" && /^    icon:/ { print "    icon: " quote "/custom-logo.png" quote; subsection = ""; next }
-        section == "site" && /^    bg_url:/ { print "    bg_url: " quote background_url quote; subsection = ""; next }
-        section == "site" && /^    enable_bg:/ { print "    enable_bg: " enable_background; subsection = ""; next }
-        section == "site" && /^    [A-Za-z0-9_-]+:/ { subsection = ""; print; next }
-        section == "about" && /^    bg_url:/ { print "    bg_url: " quote welcome_url quote; next }
-        section == "about" && /^    email:/ { print "    email: " admin_email; next }
-        section == "about" && /^    name:/ { print "    name: Guang"; next }
-        section == "about" && /^    url:/ { print "    url: " quote home_url quote; next }
+        section == "site" && /^    url:/ { print "    url: " quote site_url quote; next }
         { print }
     ' "$config" >"$temp_file"
-
-    escaped_home_url="$(printf '%s' "$home_url" | sed 's/[&|]/\\&/g')"
-    sed -i \
-        -e "s|https://fudaoyuan\.icu|${escaped_home_url}|g" \
-        -e '/cdn\.ani\.work\/site_uploads/d' \
-        "$temp_file"
     chmod 600 "$temp_file"
     mv -f "$temp_file" "$config"
 }
 
 configure_project_015_settings() {
     local port domain bind_address site_url default_ip input
-    local admin_email home_url storage_limit download_secret password_salt
+    local storage_limit download_secret password_salt
 
     port="$(get_project_015_env APP_PORT || true)"
     port="${port:-8080}"
@@ -442,18 +366,6 @@ configure_project_015_settings() {
         warn "服务将监听所有网卡，请仅在防火墙中放行需要的端口。"
     fi
 
-    admin_email="$(get_project_015_env ADMIN_EMAIL || true)"
-    admin_email="${admin_email:-admin@witile.com}"
-    read_input input "请输入站点管理员邮箱 [$admin_email]: "
-    admin_email="${input:-$admin_email}"
-    valid_email "$admin_email" || die "邮箱格式不正确。"
-
-    home_url="$(get_project_015_env HOME_URL || true)"
-    home_url="${home_url:-https://witile.com}"
-    read_input input "请输入管理员主页/版权跳转链接 [$home_url]: "
-    home_url="${input:-$home_url}"
-    valid_http_url "$home_url" || die "主页必须是有效的 http:// 或 https:// URL，且不能包含空格、# 或引号。"
-
     storage_limit="$(get_project_015_env STORAGE_LIMIT || true)"
     storage_limit="${storage_limit:-100GB}"
     read_input input "请输入分配给此服务的存储上限（如 50GB, 200GB）[$storage_limit]: "
@@ -464,8 +376,6 @@ configure_project_015_settings() {
 APP_PORT=$port
 BIND_ADDRESS=$bind_address
 DOMAIN=$domain
-ADMIN_EMAIL=$admin_email
-HOME_URL=$home_url
 STORAGE_LIMIT=$storage_limit
 EOF
     chmod 600 "$PROJECT_015_DIR/$PROJECT_015_ENV"
@@ -480,8 +390,8 @@ EOF
             "$PROJECT_015_DIR/config.yaml"
         success "已生成随机下载密钥和密码盐。"
     fi
-    customize_project_015_config "$site_url" "$admin_email" "$home_url" "$storage_limit"
-    success "已更新标题、管理员、版权链接、图片和存储容量配置。"
+    configure_project_015_runtime_config "$site_url" "$storage_limit"
+    success "已更新站点 URL、上传目录和存储容量；品牌信息完全使用 Fork 中的配置。"
 
     if [[ -n "$domain" ]] && confirm "是否立即安装并配置 Nginx 反向代理"; then
         configure_project_015_nginx "$domain" "$port"
@@ -563,13 +473,11 @@ EOF
 
 prepare_project_015_runtime() {
     mkdir -p "$PROJECT_015_DIR/uploads"
-    install_project_015_assets
+    stage_project_015_custom_assets
     write_project_015_build_files
     write_project_015_compose
     if [[ ! -f "$PROJECT_015_DIR/$PROJECT_015_ENV" || ! -f "$PROJECT_015_DIR/config.yaml" ]] || \
-        [[ -z "$(get_project_015_env ADMIN_EMAIL || true)" || \
-           -z "$(get_project_015_env HOME_URL || true)" || \
-           -z "$(get_project_015_env STORAGE_LIMIT || true)" ]]; then
+        [[ -z "$(get_project_015_env STORAGE_LIMIT || true)" ]]; then
         configure_project_015_settings
     fi
     project_015_compose config --quiet
@@ -589,6 +497,8 @@ deploy_project_015_containers() {
 }
 
 install_project_015() {
+    validate_project_015_repo
+    prepare_project_015_custom_assets_dir
     ensure_base_dependencies
     ensure_docker
 
@@ -612,8 +522,8 @@ install_project_015() {
         rm -rf -- "$PROJECT_015_DIR"
     fi
 
-    info "正在克隆项目 015..."
-    git clone --depth 1 "$PROJECT_015_REPO" "$PROJECT_015_DIR"
+    info "正在从 Fork 克隆项目 015：$GITHUB_REPO"
+    git clone --depth 1 "$GITHUB_REPO" "$PROJECT_015_DIR"
     prepare_project_015_runtime
     deploy_project_015_containers
     success "项目 015 部署完成。"
@@ -622,9 +532,12 @@ install_project_015() {
 
 update_project_015() {
     [[ -d "$PROJECT_015_DIR/.git" ]] || { warn "项目 015 尚未安装。"; return; }
+    validate_project_015_repo
+    prepare_project_015_custom_assets_dir
     ensure_base_dependencies
     ensure_docker
-    info "正在更新项目代码..."
+    git -C "$PROJECT_015_DIR" remote set-url origin "$GITHUB_REPO"
+    info "正在从 Fork 更新项目代码：$GITHUB_REPO"
     git -C "$PROJECT_015_DIR" pull --ff-only
     prepare_project_015_runtime
     deploy_project_015_containers
@@ -634,15 +547,17 @@ update_project_015() {
 
 reconfigure_project_015() {
     [[ -d "$PROJECT_015_DIR/.git" ]] || { warn "项目 015 尚未安装。"; return; }
+    validate_project_015_repo
+    prepare_project_015_custom_assets_dir
     ensure_base_dependencies
     ensure_docker
-    install_project_015_assets
+    stage_project_015_custom_assets
     write_project_015_build_files
     write_project_015_compose
     configure_project_015_settings
     project_015_compose config --quiet
     deploy_project_015_containers
-    success "项目 015 的站点定制已更新。"
+    success "项目 015 的部署参数与外部图片已更新。"
 }
 
 show_project_015_status() {
@@ -681,7 +596,7 @@ remove_project_015() {
     rm -rf -- "$PROJECT_015_DIR"
     rm -f /etc/nginx/conf.d/project_015.conf
     command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1 && nginx -s reload 2>/dev/null || true
-    success "项目 015 已卸载。"
+    success "项目 015 已卸载；自定义图片仍保留在 $PROJECT_015_CUSTOM_ASSETS_DIR。"
 }
 
 show_project_015_menu() {
@@ -694,7 +609,7 @@ show_project_015_menu() {
         printf "  4) 重启服务\n"
         printf "  5) 停止服务\n"
         printf "  6) 配置 Nginx 域名反代\n"
-        printf "  7) 重新配置站点定制\n"
+        printf "  7) 重新配置部署参数 / 应用图片\n"
         printf "  8) 卸载项目\n"
         printf "  0) 返回主菜单\n\n"
         local choice
